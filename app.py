@@ -16,7 +16,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import our modules
 try:
-    from persistent_vector_store import PersistentVectorStore  # Updated import
+    from vector_store import JupiterVectorStore
     from llm_handler import JupiterQABot
 except ImportError as e:
     st.error(f"❌ Import error: {e}")
@@ -42,7 +42,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS (same as before)
+# Custom CSS
 st.markdown("""
 <style>
 .main-header {
@@ -78,13 +78,6 @@ st.markdown("""
     color: #f44336;
     font-weight: bold;
 }
-.storage-info {
-    background-color: #f0f2f6;
-    padding: 1rem;
-    border-radius: 0.5rem;
-    border-left: 4px solid #1f77b4;
-    margin: 1rem 0;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -103,23 +96,19 @@ if 'last_processed_question' not in st.session_state:
     st.session_state.last_processed_question = ""
 if 'input_key' not in st.session_state:
     st.session_state.input_key = 0
-if 'embedding_status' not in st.session_state:
-    st.session_state.embedding_status = "Not initialized"
 
 @st.cache_resource
-def initialize_persistent_vector_store(backend="chromadb"):
-    """Initialize and cache the PERSISTENT vector store"""
+def initialize_vector_store():
+    """Initialize and cache the vector store"""
     try:
-        # Use persistent storage - embeddings will be saved to disk
-        vs = PersistentVectorStore(
-            backend=backend,
-            persist_dir="./vector_db",  # This directory will be created and persist
-            collection_name="jupiter_docs",
-            force_rebuild=False  # Never force rebuild in production
-        )
-        return vs
+        vs = JupiterVectorStore()
+        if vs.load_data():
+            vs.create_embeddings()
+            return vs
+        else:
+            return None
     except Exception as e:
-        st.error(f"❌ Error initializing persistent vector store: {str(e)}")
+        st.error(f"❌ Error initializing vector store: {str(e)}")
         return None
 
 @st.cache_resource
@@ -131,40 +120,6 @@ def initialize_qa_bot():
     except Exception as e:
         st.error(f"❌ Error initializing QA bot: {str(e)}")
         return None
-
-def setup_embeddings(vector_store):
-    """Setup embeddings with proper status tracking"""
-    if not vector_store:
-        return False
-    
-    try:
-        # Load data
-        data_loaded = vector_store.load_data("data/prepared_data.json")
-        if not data_loaded:
-            st.session_state.embedding_status = "❌ No data file found"
-            return False
-        
-        # Create embeddings (will be instant if they already exist)
-        st.session_state.embedding_status = "🔄 Checking embeddings..."
-        
-        with st.spinner("🔄 Setting up embeddings (this may take time only on first run)..."):
-            embeddings_created = vector_store.create_embeddings()
-        
-        if embeddings_created:
-            stats = vector_store.get_stats()
-            if stats['embeddings_exist']:
-                st.session_state.embedding_status = f"✅ Ready ({stats['total_documents']} docs)"
-                return True
-            else:
-                st.session_state.embedding_status = "❌ Embeddings creation failed"
-                return False
-        else:
-            st.session_state.embedding_status = "❌ Failed to create embeddings"
-            return False
-            
-    except Exception as e:
-        st.session_state.embedding_status = f"❌ Error: {str(e)}"
-        return False
 
 def get_confidence_class(confidence):
     """Get CSS class based on confidence level"""
@@ -239,88 +194,32 @@ def main():
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
-        
-        # Backend selection
-        backend_choice = st.selectbox(
-            "Choose Storage Backend:",
-            ["chromadb", "faiss", "pickle"],
-            index=0,
-            help="ChromaDB: Best for development, FAISS: Fastest search, Pickle: Simplest"
-        )
-        
+        # Remove API Key input UI (do not prompt user for API key)
         st.markdown("---")
         st.header("📊 System Status")
-        
-        # Data file check
         if os.path.exists("data/prepared_data.json"):
-            st.success("✅ Data file found")
+            st.success("✅ Data loaded")
         else:
             st.error("❌ No data found")
-            st.info("Please run the scraper first!")
-        
-        # Storage info
-        st.markdown(f"""
-        <div class="storage-info">
-            <strong>🗄️ Persistent Storage</strong><br>
-            Backend: {backend_choice.upper()}<br>
-            Location: ./vector_db/<br>
-            Status: {st.session_state.embedding_status}
-        </div>
-        """, unsafe_allow_html=True)
-        
+            st.info("Please run `python scraper.py` first!")
         # Initialize components
         if not st.session_state.initialized:
-            with st.spinner("🔄 Initializing system..."):
-                # Initialize vector store
-                st.session_state.vector_store = initialize_persistent_vector_store(backend_choice)
-                
+            with st.spinner("🔄 Initializing components..."):
+                st.session_state.vector_store = initialize_vector_store()
                 if st.session_state.vector_store:
-                    # Setup embeddings (persistent - fast after first run)
-                    embeddings_ready = setup_embeddings(st.session_state.vector_store)
-                    
-                    if embeddings_ready:
-                        # Initialize QA bot
-                        st.session_state.qa_bot = initialize_qa_bot()
-                        
-                        if st.session_state.qa_bot:
-                            st.session_state.initialized = True
-                            st.success("✅ System ready!")
-                        else:
-                            st.error("❌ Failed to initialize QA bot")
+                    st.session_state.qa_bot = initialize_qa_bot()
+                    if st.session_state.qa_bot:
+                        st.session_state.initialized = True
+                        st.success("✅ System ready!")
                     else:
-                        st.error("❌ Failed to setup embeddings")
+                        st.error("❌ Failed to initialize QA bot")
                 else:
                     st.error("❌ Failed to initialize vector store")
         else:
             st.success("✅ System ready!")
             if st.session_state.vector_store:
                 stats = st.session_state.vector_store.get_stats()
-                st.info(f"📚 {stats['total_documents']} documents | {stats['backend'].upper()}")
-                
-                # Show persistent storage benefits
-                if stats['embeddings_exist']:
-                    st.success("⚡ Embeddings loaded from cache - instant startup!")
-        
-        # Management buttons
-        st.markdown("---")
-        st.header("🔧 Management")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("🔄 Refresh Data", help="Reload if data changed"):
-                if st.session_state.vector_store:
-                    st.session_state.vector_store.force_rebuild()
-                    st.session_state.initialized = False
-                    st.rerun()
-        
-        with col2:
-            if st.button("🗑️ Clear Cache", help="Delete all cached embeddings"):
-                if st.session_state.vector_store:
-                    st.session_state.vector_store.clear_cache()
-                    st.session_state.initialized = False
-                    st.rerun()
-        
+                st.info(f"📚 {stats['total_documents']} documents loaded")
         st.markdown("---")
         st.header("💡 Sample Questions")
         sample_questions = [
@@ -336,47 +235,31 @@ def main():
         for question in sample_questions:
             if st.button(question, key=f"sample_{question}"):
                 set_sample_question(question)
-        
         st.markdown("---")
         if st.button("🗑️ Clear Chat History"):
             st.session_state.chat_history = []
             st.session_state.last_processed_question = ""
-            st.session_state.input_key += 1
+            st.session_state.input_key += 1  # Also clear input
             st.rerun()
 
-    # Main content area
-    # Performance info banner
-    if st.session_state.initialized and st.session_state.vector_store:
-        stats = st.session_state.vector_store.get_stats()
-        if stats['embeddings_exist']:
-            st.info("⚡ **Fast Mode Active**: Embeddings are cached and persistent. No re-processing on app restart!")
-    
     # Tabs for Chat and Analytics
-    tab1, tab2, tab3 = st.tabs(["Chat", "Analytics", "System Info"])
+    tab1, tab2 = st.tabs(["Chat", "Analytics"])
 
     with tab1:
         col1, _ = st.columns([3, 1])
         with col1:
             st.header("💬 Chat with Jupiter Bot")
-            
             # Display chat history
             if st.session_state.chat_history:
                 for message in st.session_state.chat_history:
                     display_chat_message(message['question'], is_user=True)
                     display_chat_message(message['answer'], is_user=False)
-                    
-                    # Show confidence
-                    confidence = message.get('confidence', 0)
-                    confidence_class = get_confidence_class(confidence)
-                    st.markdown(f'<p class="{confidence_class}">Confidence: {confidence:.1%}</p>', 
-                              unsafe_allow_html=True)
-                    
-                    # LangSmith tracing
+                    # Optionally show LangSmith run ID
                     if message.get("langsmith_run_id"):
                         run_id = message["langsmith_run_id"]
-                        st.info(f"🔗 [View trace](https://smith.langchain.com/public/{run_id})")
+                        st.info(f"See trace: https://smith.langchain.com/public/{run_id}")
 
-                        with st.expander("📝 Give feedback"):
+                        with st.expander("Give feedback on this answer"):
                             col1, col2 = st.columns([1, 4])
                             with col1:
                                 thumbs_up = st.button("👍", key=f"up_{run_id}")
@@ -388,13 +271,11 @@ def main():
                                 score = 1 if thumbs_up else 0
                                 comment = feedback_text
                                 if send_langsmith_feedback(run_id, score, comment):
-                                    st.success("✅ Feedback sent!")
+                                    st.success("Feedback sent to LangSmith!")
                                 else:
-                                    st.error("❌ Failed to send feedback")
-                    
-                    st.markdown("---")
+                                    st.error("Failed to send feedback.")
 
-            # Question input
+            # Question input - using dynamic key to force refresh and clear
             question_input = st.text_input(
                 "Ask your question:",
                 value=st.session_state.get('current_question', ''),
@@ -411,17 +292,18 @@ def main():
                 send_button = st.button("📤 Send Question", type="primary")
             with col_clear:
                 if st.button("🔄 New Question"):
-                    st.session_state.input_key += 1
+                    st.session_state.input_key += 1  # Force new input widget
                     st.rerun()
 
             # Process question when button is clicked
             if send_button and question_input.strip():
                 if question_input.strip() != st.session_state.last_processed_question:
                     if not st.session_state.initialized:
-                        st.error("❌ System not ready. Please wait for initialization.")
+                        st.error("❌ Please configure the system first (set secrets and run scraper)")
                     else:
                         with st.spinner("🔍 Searching and generating answer..."):
                             try:
+                                # LangSmith tracing integration
                                 response = run_with_langsmith(
                                     question_input.strip(),
                                     st.session_state.qa_bot,
@@ -432,16 +314,16 @@ def main():
                                 st.session_state.input_key += 1
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"❌ Error: {str(e)}")
+                                st.error(f"❌ Error generating answer: {str(e)}")
 
-            # Handle sample question submission
+            # Handle sample question submission (from sidebar buttons)
             if st.session_state.get('question_submitted', False):
                 current_q = st.session_state.get('current_question', '')
                 if current_q and current_q != st.session_state.last_processed_question:
                     if not st.session_state.initialized:
-                        st.error("❌ System not ready. Please wait for initialization.")
+                        st.error("❌ Please configure the system first (set secrets and run scraper)")
                     else:
-                        with st.spinner("🔍 Processing sample question..."):
+                        with st.spinner("🔍 Searching and generating answer..."):
                             try:
                                 response = run_with_langsmith(
                                     current_q,
@@ -452,8 +334,7 @@ def main():
                                 st.session_state.last_processed_question = current_q
                                 st.session_state.input_key += 1
                             except Exception as e:
-                                st.error(f"❌ Error: {str(e)}")
-                
+                                st.error(f"❌ Error generating answer: {str(e)}")
                 st.session_state.question_submitted = False
                 if 'current_question' in st.session_state:
                     del st.session_state.current_question
@@ -467,113 +348,36 @@ def main():
             avg_confidence = sum(msg.get('confidence', 0) for msg in st.session_state.chat_history) / total_questions
             high_confidence_count = sum(1 for msg in st.session_state.chat_history if msg.get('confidence', 0) >= 0.7)
 
-            # Display metrics
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Questions", total_questions)
-            with col2:
-                st.metric("Average Confidence", f"{avg_confidence:.1%}")
-            with col3:
-                st.metric("High Confidence", f"{high_confidence_count}/{total_questions}")
+            # Display stats
+            st.metric("Total Questions", total_questions)
+            st.metric("Average Confidence", f"{avg_confidence:.1%}")
+            st.metric("High Confidence Answers", f"{high_confidence_count}/{total_questions}")
 
             # Confidence distribution
-            st.subheader("📊 Confidence Distribution")
+            st.subheader("Confidence Distribution")
             confidence_data = [msg.get('confidence', 0) for msg in st.session_state.chat_history]
             st.bar_chart(confidence_data)
 
             # Recent questions
-            st.subheader("🕒 Recent Questions")
+            st.subheader("Recent Questions")
             for i, msg in enumerate(reversed(st.session_state.chat_history[-5:]), 1):
                 confidence = msg.get('confidence', 0)
                 confidence_emoji = "🟢" if confidence >= 0.7 else "🟡" if confidence >= 0.4 else "🔴"
-                st.write(f"{confidence_emoji} **Q{i}:** {msg['question'][:60]}...")
-                st.write(f"   📈 Confidence: {confidence:.1%}")
+                st.write(f"{confidence_emoji} {msg['question'][:50]}...")
+            # Show LangSmith run IDs for last 5
+            st.subheader("LangSmith Trace IDs")
+            for i, msg in enumerate(reversed(st.session_state.chat_history[-5:]), 1):
                 if msg.get("langsmith_run_id"):
-                    st.write(f"   🔗 Trace: {msg['langsmith_run_id']}")
-                st.write("")
+                    st.write(f"{i}. {msg['langsmith_run_id']}")
         else:
-            st.info("💬 Ask some questions to see analytics!")
-
-    with tab3:
-        st.header("🔧 System Information")
-        
-        if st.session_state.vector_store:
-            stats = st.session_state.vector_store.get_stats()
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("📊 Vector Store Stats")
-                st.json({
-                    "Backend": stats['backend'],
-                    "Total Documents": stats['total_documents'],
-                    "Embedding Model": stats['embedding_model'],
-                    "Embedding Dimensions": stats['embedding_dimensions'],
-                    "Embeddings Exist": stats['embeddings_exist'],
-                    "Storage Location": stats['persist_dir']
-                })
-            
-            with col2:
-                st.subheader("💾 Storage Benefits")
-                st.success("✅ **Persistent Storage Active**")
-                st.info("""
-                **Benefits:**
-                - ⚡ Instant app startup after first run
-                - 💾 Embeddings saved to disk
-                - 🔄 Auto-detects data changes
-                - 📈 Scales without re-processing
-                - 🏗️ Production-ready architecture
-                """)
-                
-                # Storage location info
-                if os.path.exists("./vector_db"):
-                    st.success("📁 Storage directory exists")
-                    # Show directory size if possible
-                    try:
-                        import glob
-                        files = glob.glob("./vector_db/*")
-                        st.info(f"📁 {len(files)} cache files found")
-                    except:
-                        pass
-                else:
-                    st.warning("📁 Storage directory will be created on first run")
-        
-        # System requirements
-        st.subheader("🔧 System Requirements")
-        st.code("""
-# Required packages for persistent storage:
-pip install chromadb        # For ChromaDB backend
-pip install faiss-cpu      # For FAISS backend (optional)
-pip install sentence-transformers
-pip install streamlit
-
-# Storage requirements:
-- Disk space: ~100MB for embeddings
-- Memory: ~500MB during operation
-- CPU: Any modern processor
-        """)
-        
-        # Troubleshooting
-        st.subheader("🩺 Troubleshooting")
-        st.info("""
-        **If embeddings keep recreating:**
-        1. Check if `./vector_db/` directory persists
-        2. Ensure write permissions to app directory
-        3. Verify data file hasn't changed
-        4. Try clearing cache and rebuilding
-        
-        **For deployment:**
-        - Ensure persistent storage is mounted
-        - Use volume mounts for Docker deployments
-        - Consider read-only data after first setup
-        """)
+            st.info("Ask a question to see analytics!")
 
     # Footer
     st.markdown("---")
     st.markdown("""
     <div style="text-align: center; color: #666;">
-        <p>🏦 Jupiter Money QA Bot v2.0 | Now with Persistent Storage</p>
-        <p><small>⚡ Embeddings cached for instant startup | Built with Streamlit, Groq API, and ChromaDB/FAISS</small></p>
+        <p>🏦 Jupiter Money QA Bot | Built with Streamlit, Groq API, and ChromaDB</p>
+        <p><small>This is a demo bot for assessment purposes</small></p>
     </div>
     """, unsafe_allow_html=True)
 

@@ -9,3 +9,5 @@ chromadb
 python-dotenv
 lxml
 pysqlite3-binary
+langsmith
+langchain
