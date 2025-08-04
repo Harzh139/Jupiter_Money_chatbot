@@ -157,7 +157,8 @@ def display_chat_message(message, is_user=True):
 def set_sample_question(question):
     """Callback function to set a sample question"""
     st.session_state.current_question = question
-    st.session_state.question_submitted = True
+    st.session_state.question_submitted = False  # Don't auto-submit, just populate
+    st.session_state.input_key += 1  # Force input refresh
 
 def run_with_langsmith(question, qa_bot, vector_store):
     """Wrap QA call with LangSmith tracing if available"""
@@ -322,9 +323,8 @@ def main():
                 key=f"question_input_{st.session_state.input_key}"
             )
 
-            # Clear the current_question after using it
-            if 'current_question' in st.session_state:
-                del st.session_state.current_question
+            # Only clear current_question after it's been displayed in the input
+            # This ensures sample questions appear in the input box
 
             col_send, col_clear = st.columns([1, 1])
             with col_send:
@@ -355,29 +355,9 @@ def main():
                             except Exception as e:
                                 st.error(f"❌ Error generating answer: {str(e)}")
 
-            # Handle sample question submission (from sidebar buttons)
-            if st.session_state.get('question_submitted', False):
-                current_q = st.session_state.get('current_question', '')
-                if current_q and current_q != st.session_state.last_processed_question:
-                    if not st.session_state.initialized:
-                        st.error("❌ Please configure the system first (set secrets and run scraper)")
-                    else:
-                        with st.spinner("🔍 Searching and generating answer..."):
-                            try:
-                                response = run_with_langsmith(
-                                    current_q,
-                                    st.session_state.qa_bot,
-                                    st.session_state.vector_store
-                                )
-                                st.session_state.chat_history.append(response)
-                                st.session_state.last_processed_question = current_q
-                                st.session_state.input_key += 1
-                            except Exception as e:
-                                st.error(f"❌ Error generating answer: {str(e)}")
-                st.session_state.question_submitted = False
-                if 'current_question' in st.session_state:
-                    del st.session_state.current_question
-                st.rerun()
+            # Clear current_question only after user interaction (not on sample question click)
+            if send_button and 'current_question' in st.session_state:
+                del st.session_state.current_question
 
     with tab2:
         st.header("📈 Analytics")
