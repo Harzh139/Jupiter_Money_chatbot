@@ -1,8 +1,15 @@
-import streamlit as st
 import os
+import streamlit as st
 import sys
 from datetime import datetime
 import json
+import requests
+
+# --- LangSmith/LangChain tracing env setup ---
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_API_KEY"] = st.secrets["LANGCHAIN_API_KEY"]
+os.environ["LANGCHAIN_PROJECT"] = st.secrets["LANGCHAIN_PROJECT"]
+# ---------------------------------------------
 
 # Add current directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -164,6 +171,21 @@ def run_with_langsmith(question, qa_bot, vector_store):
         response["langsmith_run_id"] = None
         return response
 
+def send_langsmith_feedback(run_id, score, comment=""):
+    """Send feedback to LangSmith for a given run_id"""
+    api_key = st.secrets["LANGCHAIN_API_KEY"]
+    url = f"https://api.smith.langchain.com/runs/{run_id}/feedback"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "score": score,
+        "comment": comment
+    }
+    response = requests.post(url, headers=headers, json=data)
+    return response.ok
+
 def main():
     # Header
     st.markdown('<h1 class="main-header">🏦 Jupiter Money QA Bot</h1>', unsafe_allow_html=True)
@@ -234,7 +256,24 @@ def main():
                     display_chat_message(message['answer'], is_user=False)
                     # Optionally show LangSmith run ID
                     if message.get("langsmith_run_id"):
-                        st.caption(f"LangSmith Trace ID: {message['langsmith_run_id']}")
+                        run_id = message["langsmith_run_id"]
+                        st.info(f"See trace: https://smith.langchain.com/public/{run_id}")
+
+                        with st.expander("Give feedback on this answer"):
+                            col1, col2 = st.columns([1, 4])
+                            with col1:
+                                thumbs_up = st.button("👍", key=f"up_{run_id}")
+                                thumbs_down = st.button("👎", key=f"down_{run_id}")
+                            with col2:
+                                feedback_text = st.text_input("Optional comment", key=f"fb_{run_id}")
+
+                            if thumbs_up or thumbs_down:
+                                score = 1 if thumbs_up else 0
+                                comment = feedback_text
+                                if send_langsmith_feedback(run_id, score, comment):
+                                    st.success("Feedback sent to LangSmith!")
+                                else:
+                                    st.error("Failed to send feedback.")
 
             # Question input - using dynamic key to force refresh and clear
             question_input = st.text_input(
