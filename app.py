@@ -276,26 +276,52 @@ def main():
                 for message in st.session_state.chat_history:
                     display_chat_message(message['question'], is_user=True)
                     display_chat_message(message['answer'], is_user=False)
-                    # Optionally show LangSmith run ID
-                    if message.get("langsmith_run_id"):
-                        run_id = message["langsmith_run_id"]
-                        st.info(f"See trace: https://smith.langchain.com/public/{run_id}")
+                    # Show confidence score and feedback section
+                    confidence = message.get('confidence', 0)
+                    confidence_class = get_confidence_class(confidence)
+                    st.markdown(f'<p class="{confidence_class}">Confidence: {confidence:.1%}</p>', unsafe_allow_html=True)
+                    
+                    # Always show feedback section (local feedback)
+                    with st.expander("📝 Rate this answer"):
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            thumbs_up = st.button("👍 Helpful", key=f"up_{len(st.session_state.chat_history)}_{message.get('question', '')[:20]}")
+                            thumbs_down = st.button("👎 Not helpful", key=f"down_{len(st.session_state.chat_history)}_{message.get('question', '')[:20]}")
+                        with col2:
+                            feedback_text = st.text_area("Optional comment (helps improve the bot):", 
+                                                        key=f"fb_{len(st.session_state.chat_history)}_{message.get('question', '')[:20]}",
+                                                        height=60)
 
-                        with st.expander("Give feedback on this answer"):
-                            col1, col2 = st.columns([1, 4])
-                            with col1:
-                                thumbs_up = st.button("👍", key=f"up_{run_id}")
-                                thumbs_down = st.button("👎", key=f"down_{run_id}")
-                            with col2:
-                                feedback_text = st.text_input("Optional comment", key=f"fb_{run_id}")
-
-                            if thumbs_up or thumbs_down:
-                                score = 1 if thumbs_up else 0
-                                comment = feedback_text
-                                if send_langsmith_feedback(run_id, score, comment):
-                                    st.success("Feedback sent to LangSmith!")
+                        if thumbs_up or thumbs_down:
+                            score = 1 if thumbs_up else 0
+                            comment = feedback_text.strip()
+                            
+                            # Store feedback locally
+                            feedback_key = f"feedback_{len(st.session_state.chat_history)}"
+                            if feedback_key not in st.session_state:
+                                st.session_state[feedback_key] = {
+                                    'score': score,
+                                    'comment': comment,
+                                    'question': message.get('question', ''),
+                                    'timestamp': datetime.now().isoformat()
+                                }
+                                
+                                # Try to send to LangSmith if available
+                                langsmith_success = False
+                                if message.get("langsmith_run_id") and LANGSMITH_ENABLED:
+                                    langsmith_success = send_langsmith_feedback(message["langsmith_run_id"], score, comment)
+                                
+                                if langsmith_success:
+                                    st.success("✅ Feedback sent to LangSmith for analysis!")
                                 else:
-                                    st.error("Failed to send feedback.")
+                                    st.success("✅ Thank you for your feedback! This helps improve the bot.")
+                                    if not LANGSMITH_ENABLED:
+                                        st.info("💡 Feedback stored locally. Enable LangSmith for advanced analytics.")
+                    
+                    # Show LangSmith trace link if available
+                    if message.get("langsmith_run_id") and LANGSMITH_ENABLED:
+                        run_id = message["langsmith_run_id"]
+                        st.info(f"🔍 [View detailed trace](https://smith.langchain.com/public/{run_id})")
 
             # Question input - using dynamic key to force refresh and clear
             question_input = st.text_input(
@@ -380,17 +406,47 @@ def main():
             confidence_data = [msg.get('confidence', 0) for msg in st.session_state.chat_history]
             st.bar_chart(confidence_data)
 
+            # Feedback Analytics
+            feedback_keys = [key for key in st.session_state.keys() if key.startswith('feedback_')]
+            if feedback_keys:
+                st.subheader("📊 User Feedback")
+                positive_feedback = sum(1 for key in feedback_keys if st.session_state[key]['score'] == 1)
+                total_feedback = len(feedback_keys)
+                satisfaction_rate = (positive_feedback / total_feedback) * 100 if total_feedback > 0 else 0
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Feedback", total_feedback)
+                with col2:
+                    st.metric("Positive Feedback", positive_feedback)
+                with col3:
+                    st.metric("Satisfaction Rate", f"{satisfaction_rate:.1f}%")
+                
+                # Recent feedback comments
+                if any(st.session_state[key]['comment'] for key in feedback_keys):
+                    st.subheader("💬 Recent Comments")
+                    for key in reversed(feedback_keys[-3:]):
+                        feedback = st.session_state[key]
+                        if feedback['comment']:
+                            emoji = "👍" if feedback['score'] == 1 else "👎"
+                            st.write(f"{emoji} *{feedback['question'][:40]}...*")
+                            st.write(f"   💭 \"{feedback['comment']}\"")
+            
             # Recent questions
             st.subheader("Recent Questions")
             for i, msg in enumerate(reversed(st.session_state.chat_history[-5:]), 1):
                 confidence = msg.get('confidence', 0)
                 confidence_emoji = "🟢" if confidence >= 0.7 else "🟡" if confidence >= 0.4 else "🔴"
                 st.write(f"{confidence_emoji} {msg['question'][:50]}...")
-            # Show LangSmith run IDs for last 5
-            st.subheader("LangSmith Trace IDs")
-            for i, msg in enumerate(reversed(st.session_state.chat_history[-5:]), 1):
-                if msg.get("langsmith_run_id"):
-                    st.write(f"{i}. {msg['langsmith_run_id']}")
+            
+            # Show LangSmith info if available
+            if LANGSMITH_ENABLED:
+                st.subheader("🔍 LangSmith Traces")
+                trace_count = sum(1 for msg in st.session_state.chat_history if msg.get("langsmith_run_id"))
+                st.info(f"📈 {trace_count} conversations traced in LangSmith")
+                for i, msg in enumerate(reversed(st.session_state.chat_history[-3:]), 1):
+                    if msg.get("langsmith_run_id"):
+                        st.write(f"{i}. `{msg['langsmith_run_id']}`")
         else:
             st.info("Ask a question to see analytics!")
 
