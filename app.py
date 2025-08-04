@@ -15,6 +15,18 @@ except ImportError as e:
     st.error(f"❌ Import error: {e}")
     st.stop()
 
+# LangSmith integration
+import os
+import uuid
+try:
+    from langsmith import trace
+    LANGSMITH_API_KEY = st.secrets.get("LANGSMITH_API_KEY", os.getenv("LANGSMITH_API_KEY"))
+    LANGSMITH_PROJECT = st.secrets.get("LANGSMITH_PROJECT", os.getenv("LANGSMITH_PROJECT", "JupiterBot"))
+except ImportError:
+    trace = None
+    LANGSMITH_API_KEY = None
+    LANGSMITH_PROJECT = None
+
 # Page configuration
 st.set_page_config(
     page_title="Jupiter Money QA Bot",
@@ -93,9 +105,10 @@ def initialize_vector_store():
         return None
 
 @st.cache_resource
-def initialize_qa_bot(groq_api_key):
-    """Initialize and cache the QA bot"""
+def initialize_qa_bot():
+    """Initialize and cache the QA bot using secrets"""
     try:
+        groq_api_key = st.secrets["GROQ_API_KEY"]
         return JupiterQABot(groq_api_key=groq_api_key)
     except Exception as e:
         st.error(f"❌ Error initializing QA bot: {str(e)}")
@@ -132,65 +145,60 @@ def set_sample_question(question):
     st.session_state.current_question = question
     st.session_state.question_submitted = True
 
+def run_with_langsmith(question, qa_bot, vector_store):
+    """Wrap QA call with LangSmith tracing if available"""
+    if trace and LANGSMITH_API_KEY:
+        with trace(
+            name="JupiterBot QA",
+            project_name=LANGSMITH_PROJECT,
+            api_key=LANGSMITH_API_KEY,
+            tags=["jupiter", "qa-bot"],
+            metadata={"question": question, "session_id": str(uuid.uuid4())}
+        ) as run:
+            response = qa_bot.answer_question(question, vector_store)
+            run_id = getattr(run, "id", None)
+            response["langsmith_run_id"] = str(run_id) if run_id else None
+            return response
+    else:
+        response = qa_bot.answer_question(question, vector_store)
+        response["langsmith_run_id"] = None
+        return response
+
 def main():
     # Header
     st.markdown('<h1 class="main-header">🏦 Jupiter Money QA Bot</h1>', unsafe_allow_html=True)
     st.markdown("---")
-    
+
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
-        
-        # API Key input
-        groq_api_key = st.text_input(
-            "🔑 Groq API Key",
-            type="password",
-            help="Enter your Groq API key. Get one free at https://console.groq.com/keys"
-        )
-        
+        # Remove API Key input UI (do not prompt user for API key)
         st.markdown("---")
-        
-        # System status
         st.header("📊 System Status")
-        
-        # Check data availability
         if os.path.exists("data/prepared_data.json"):
             st.success("✅ Data loaded")
         else:
             st.error("❌ No data found")
             st.info("Please run `python scraper.py` first!")
-        
         # Initialize components
-        if groq_api_key:
-            if not st.session_state.initialized:
-                with st.spinner("🔄 Initializing components..."):
-                    # Initialize vector store
-                    st.session_state.vector_store = initialize_vector_store()
-                    
-                    # Initialize QA bot
-                    if st.session_state.vector_store:
-                        st.session_state.qa_bot = initialize_qa_bot(groq_api_key)
-                        
-                        if st.session_state.qa_bot:
-                            st.session_state.initialized = True
-                            st.success("✅ System ready!")
-                        else:
-                            st.error("❌ Failed to initialize QA bot")
-                    else:
-                        st.error("❌ Failed to initialize vector store")
-            else:
-                st.success("✅ System ready!")
-                
-                # Show stats
+        if not st.session_state.initialized:
+            with st.spinner("🔄 Initializing components..."):
+                st.session_state.vector_store = initialize_vector_store()
                 if st.session_state.vector_store:
-                    stats = st.session_state.vector_store.get_stats()
-                    st.info(f"📚 {stats['total_documents']} documents loaded")
+                    st.session_state.qa_bot = initialize_qa_bot()
+                    if st.session_state.qa_bot:
+                        st.session_state.initialized = True
+                        st.success("✅ System ready!")
+                    else:
+                        st.error("❌ Failed to initialize QA bot")
+                else:
+                    st.error("❌ Failed to initialize vector store")
         else:
-            st.warning("⚠️ Please enter your Groq API key")
-        
+            st.success("✅ System ready!")
+            if st.session_state.vector_store:
+                stats = st.session_state.vector_store.get_stats()
+                st.info(f"📚 {stats['total_documents']} documents loaded")
         st.markdown("---")
-        
-        # Sample questions
         st.header("💡 Sample Questions")
         sample_questions = [
             "What is Jupiter Money?",
@@ -202,154 +210,129 @@ def main():
             "What cards do you offer?",
             "How do I make transactions?"
         ]
-        
         for question in sample_questions:
             if st.button(question, key=f"sample_{question}"):
                 set_sample_question(question)
-        
         st.markdown("---")
-        
-        # Clear chat button
         if st.button("🗑️ Clear Chat History"):
             st.session_state.chat_history = []
             st.session_state.last_processed_question = ""
             st.session_state.input_key += 1  # Also clear input
             st.rerun()
-    
-    # Main chat interface
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        st.header("💬 Chat with Jupiter Bot")
-        
-        # Display chat history
-        if st.session_state.chat_history:
-            for message in st.session_state.chat_history:
-                display_chat_message(message['question'], is_user=True)
-                
-                # Bot response with confidence
-                confidence = message.get('confidence', 0)
-                confidence_class = get_confidence_class(confidence)
-                
-                bot_response = f"{message['answer']}"
-                
-                st.markdown(f"""
-                <div class="chat-message bot-message">
-                    <strong>🤖 Jupiter Bot:</strong><br>
-                    {bot_response}
-                    <br><br>
-                    <small>Confidence: <span class="{confidence_class}">{confidence:.1%}</span> | 
-                    Sources: {message.get('sources_used', 0)}</small>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        # Question input - using dynamic key to force refresh and clear
-        question_input = st.text_input(
-            "Ask your question:",
-            value=st.session_state.get('current_question', ''),
-            placeholder="e.g., What is Jupiter Money?",
-            key=f"question_input_{st.session_state.input_key}"
-        )
-        
-        # Clear the current_question after using it
-        if 'current_question' in st.session_state:
-            del st.session_state.current_question
-        
-        col_send, col_clear = st.columns([1, 1])
-        
-        with col_send:
-            send_button = st.button("📤 Send Question", type="primary")
-        
-        with col_clear:
-            if st.button("🔄 New Question"):
-                st.session_state.input_key += 1  # Force new input widget
-                st.rerun()
-        
-        # Process question when button is clicked
-        if send_button and question_input.strip():
-            # Check if this is a different question from the last processed one
-            if question_input.strip() != st.session_state.last_processed_question:
-                if not st.session_state.initialized:
-                    st.error("❌ Please configure the system first (enter API key in sidebar)")
-                else:
-                    with st.spinner("🔍 Searching and generating answer..."):
-                        try:
-                            # Get answer from QA bot
-                            response = st.session_state.qa_bot.answer_question(
-                                question_input.strip(), 
-                                st.session_state.vector_store
-                            )
-                            
-                            # Add to chat history
-                            st.session_state.chat_history.append(response)
-                            st.session_state.last_processed_question = question_input.strip()
-                            
-                            # Increment key to create new input widget (clears the field)
-                            st.session_state.input_key += 1
-                            st.rerun()
-                            
-                        except Exception as e:
-                            st.error(f"❌ Error generating answer: {str(e)}")
-        
-        # Handle sample question submission (from sidebar buttons)
-        if st.session_state.get('question_submitted', False):
-            current_q = st.session_state.get('current_question', '')
-            if current_q and current_q != st.session_state.last_processed_question:
-                if not st.session_state.initialized:
-                    st.error("❌ Please configure the system first (enter API key in sidebar)")
-                else:
-                    with st.spinner("🔍 Searching and generating answer..."):
-                        try:
-                            # Get answer from QA bot
-                            response = st.session_state.qa_bot.answer_question(
-                                current_q, 
-                                st.session_state.vector_store
-                            )
-                            
-                            # Add to chat history
-                            st.session_state.chat_history.append(response)
-                            st.session_state.last_processed_question = current_q
-                            
-                            # Increment key to create new input widget (clears the field)
-                            st.session_state.input_key += 1
-                            
-                        except Exception as e:
-                            st.error(f"❌ Error generating answer: {str(e)}")
-            
-            # Reset the submission flag
-            st.session_state.question_submitted = False
+
+    # Tabs for Chat and Analytics
+    tab1, tab2 = st.tabs(["Chat", "Analytics"])
+
+    with tab1:
+        col1, _ = st.columns([3, 1])
+        with col1:
+            st.header("💬 Chat with Jupiter Bot")
+            # Display chat history
+            if st.session_state.chat_history:
+                for message in st.session_state.chat_history:
+                    display_chat_message(message['question'], is_user=True)
+                    display_chat_message(message['answer'], is_user=False)
+                    # Optionally show LangSmith run ID
+                    if message.get("langsmith_run_id"):
+                        st.caption(f"LangSmith Trace ID: {message['langsmith_run_id']}")
+
+            # Question input - using dynamic key to force refresh and clear
+            question_input = st.text_input(
+                "Ask your question:",
+                value=st.session_state.get('current_question', ''),
+                placeholder="e.g., What is Jupiter Money?",
+                key=f"question_input_{st.session_state.input_key}"
+            )
+
+            # Clear the current_question after using it
             if 'current_question' in st.session_state:
                 del st.session_state.current_question
-            st.rerun()
-    
-    with col2:
+
+            col_send, col_clear = st.columns([1, 1])
+            with col_send:
+                send_button = st.button("📤 Send Question", type="primary")
+            with col_clear:
+                if st.button("🔄 New Question"):
+                    st.session_state.input_key += 1  # Force new input widget
+                    st.rerun()
+
+            # Process question when button is clicked
+            if send_button and question_input.strip():
+                if question_input.strip() != st.session_state.last_processed_question:
+                    if not st.session_state.initialized:
+                        st.error("❌ Please configure the system first (set secrets and run scraper)")
+                    else:
+                        with st.spinner("🔍 Searching and generating answer..."):
+                            try:
+                                # LangSmith tracing integration
+                                response = run_with_langsmith(
+                                    question_input.strip(),
+                                    st.session_state.qa_bot,
+                                    st.session_state.vector_store
+                                )
+                                st.session_state.chat_history.append(response)
+                                st.session_state.last_processed_question = question_input.strip()
+                                st.session_state.input_key += 1
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error generating answer: {str(e)}")
+
+            # Handle sample question submission (from sidebar buttons)
+            if st.session_state.get('question_submitted', False):
+                current_q = st.session_state.get('current_question', '')
+                if current_q and current_q != st.session_state.last_processed_question:
+                    if not st.session_state.initialized:
+                        st.error("❌ Please configure the system first (set secrets and run scraper)")
+                    else:
+                        with st.spinner("🔍 Searching and generating answer..."):
+                            try:
+                                response = run_with_langsmith(
+                                    current_q,
+                                    st.session_state.qa_bot,
+                                    st.session_state.vector_store
+                                )
+                                st.session_state.chat_history.append(response)
+                                st.session_state.last_processed_question = current_q
+                                st.session_state.input_key += 1
+                            except Exception as e:
+                                st.error(f"❌ Error generating answer: {str(e)}")
+                st.session_state.question_submitted = False
+                if 'current_question' in st.session_state:
+                    del st.session_state.current_question
+                st.rerun()
+
+    with tab2:
         st.header("📈 Analytics")
-        
         if st.session_state.chat_history:
             # Calculate stats
             total_questions = len(st.session_state.chat_history)
             avg_confidence = sum(msg.get('confidence', 0) for msg in st.session_state.chat_history) / total_questions
             high_confidence_count = sum(1 for msg in st.session_state.chat_history if msg.get('confidence', 0) >= 0.7)
-            
+
             # Display stats
             st.metric("Total Questions", total_questions)
             st.metric("Average Confidence", f"{avg_confidence:.1%}")
             st.metric("High Confidence Answers", f"{high_confidence_count}/{total_questions}")
-            
+
             # Confidence distribution
             st.subheader("Confidence Distribution")
             confidence_data = [msg.get('confidence', 0) for msg in st.session_state.chat_history]
             st.bar_chart(confidence_data)
-            
+
             # Recent questions
             st.subheader("Recent Questions")
             for i, msg in enumerate(reversed(st.session_state.chat_history[-5:]), 1):
                 confidence = msg.get('confidence', 0)
                 confidence_emoji = "🟢" if confidence >= 0.7 else "🟡" if confidence >= 0.4 else "🔴"
                 st.write(f"{confidence_emoji} {msg['question'][:50]}...")
+            # Show LangSmith run IDs for last 5
+            st.subheader("LangSmith Trace IDs")
+            for i, msg in enumerate(reversed(st.session_state.chat_history[-5:]), 1):
+                if msg.get("langsmith_run_id"):
+                    st.write(f"{i}. {msg['langsmith_run_id']}")
         else:
             st.info("Ask a question to see analytics!")
-    
+
     # Footer
     st.markdown("---")
     st.markdown("""
