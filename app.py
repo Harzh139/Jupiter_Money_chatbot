@@ -311,17 +311,8 @@ def main():
                                 if message.get("langsmith_run_id") and LANGSMITH_ENABLED:
                                     langsmith_success = send_langsmith_feedback(message["langsmith_run_id"], score, comment)
                                 
-                                if langsmith_success:
-                                    st.success("✅ Feedback sent to LangSmith for analysis!")
-                                else:
-                                    st.success("✅ Thank you for your feedback! This helps improve the bot.")
-                                    if not LANGSMITH_ENABLED:
-                                        st.info("💡 Feedback stored locally. Enable LangSmith for advanced analytics.")
-                    
-                    # Show LangSmith trace link if available
-                    if message.get("langsmith_run_id") and LANGSMITH_ENABLED:
-                        run_id = message["langsmith_run_id"]
-                        st.info(f"🔍 [View detailed trace](https://smith.langchain.com/public/{run_id})")
+                                # Always show success message without mentioning LangSmith
+                                st.success("✅ Thank you for your feedback! This helps improve the bot.")
 
             # Question input - using dynamic key to force refresh and clear
             question_input = st.text_input(
@@ -439,14 +430,12 @@ def main():
                 confidence_emoji = "🟢" if confidence >= 0.7 else "🟡" if confidence >= 0.4 else "🔴"
                 st.write(f"{confidence_emoji} {msg['question'][:50]}...")
             
-            # Show LangSmith info if available
-            if LANGSMITH_ENABLED:
-                st.subheader("🔍 LangSmith Traces")
-                trace_count = sum(1 for msg in st.session_state.chat_history if msg.get("langsmith_run_id"))
-                st.info(f"📈 {trace_count} conversations traced in LangSmith")
-                for i, msg in enumerate(reversed(st.session_state.chat_history[-3:]), 1):
-                    if msg.get("langsmith_run_id"):
-                        st.write(f"{i}. `{msg['langsmith_run_id']}`")
+            # Additional system info
+            st.subheader("⚙️ System Info")
+            st.info(f"📈 Total conversations: {len(st.session_state.chat_history)}")
+            if st.session_state.vector_store:
+                stats = st.session_state.vector_store.get_stats()
+                st.info(f"📚 Knowledge base: {stats['total_documents']} documents indexed")
         else:
             st.info("Ask a question to see analytics!")
 
