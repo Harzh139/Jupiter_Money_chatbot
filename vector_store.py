@@ -11,8 +11,8 @@ class JupiterVectorStore:
         print("🔄 Loading embedding model...")
         self.embedding_model = SentenceTransformer(model_name)
         
-        # Initialize ChromaDB
-        self.client = chromadb.PersistentClient(path="./chroma_db")
+        # Use in-memory ChromaDB to avoid sqlite3 issues
+        self.client = chromadb.Client()
         self.collection_name = "jupiter_docs"
         
         # Try to get existing collection or create new one
