@@ -5,10 +5,15 @@ from datetime import datetime
 import json
 import requests
 
-# --- LangSmith/LangChain tracing env setup ---
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_API_KEY"] = st.secrets["LANGCHAIN_API_KEY"]
-os.environ["LANGCHAIN_PROJECT"] = st.secrets["LANGCHAIN_PROJECT"]
+# --- LangSmith/LangChain tracing env setup (OPTIONAL) ---
+try:
+    if "LANGCHAIN_API_KEY" in st.secrets:
+        os.environ["LANGCHAIN_TRACING_V2"] = "true"
+        os.environ["LANGCHAIN_API_KEY"] = st.secrets["LANGCHAIN_API_KEY"]
+        os.environ["LANGCHAIN_PROJECT"] = st.secrets.get("LANGCHAIN_PROJECT", "JupiterBot")
+except Exception as e:
+    # LangSmith is optional - continue without it
+    pass
 # ---------------------------------------------
 
 # Add current directory to path
@@ -22,17 +27,19 @@ except ImportError as e:
     st.error(f"❌ Import error: {e}")
     st.stop()
 
-# LangSmith integration
+# LangSmith integration (OPTIONAL)
 import os
 import uuid
 try:
     from langsmith import trace
-    LANGSMITH_API_KEY = st.secrets.get("LANGSMITH_API_KEY", os.getenv("LANGSMITH_API_KEY"))
-    LANGSMITH_PROJECT = st.secrets.get("LANGSMITH_PROJECT", os.getenv("LANGSMITH_PROJECT", "JupiterBot"))
-except ImportError:
+    LANGSMITH_API_KEY = st.secrets.get("LANGCHAIN_API_KEY", os.getenv("LANGCHAIN_API_KEY"))
+    LANGSMITH_PROJECT = st.secrets.get("LANGCHAIN_PROJECT", os.getenv("LANGCHAIN_PROJECT", "JupiterBot"))
+    LANGSMITH_ENABLED = bool(LANGSMITH_API_KEY)
+except (ImportError, KeyError, Exception):
     trace = None
     LANGSMITH_API_KEY = None
     LANGSMITH_PROJECT = None
+    LANGSMITH_ENABLED = False
 
 # Page configuration
 st.set_page_config(
@@ -154,37 +161,52 @@ def set_sample_question(question):
 
 def run_with_langsmith(question, qa_bot, vector_store):
     """Wrap QA call with LangSmith tracing if available"""
-    if trace and LANGSMITH_API_KEY:
-        with trace(
-            name="JupiterBot QA",
-            project_name=LANGSMITH_PROJECT,
-            api_key=LANGSMITH_API_KEY,
-            tags=["jupiter", "qa-bot"],
-            metadata={"question": question, "session_id": str(uuid.uuid4())}
-        ) as run:
-            response = qa_bot.answer_question(question, vector_store)
-            run_id = getattr(run, "id", None)
-            response["langsmith_run_id"] = str(run_id) if run_id else None
-            return response
-    else:
-        response = qa_bot.answer_question(question, vector_store)
-        response["langsmith_run_id"] = None
-        return response
+    try:
+        if trace and LANGSMITH_ENABLED and LANGSMITH_API_KEY:
+            with trace(
+                name="JupiterBot QA",
+                project_name=LANGSMITH_PROJECT,
+                api_key=LANGSMITH_API_KEY,
+                tags=["jupiter", "qa-bot"],
+                metadata={"question": question, "session_id": str(uuid.uuid4())}
+            ) as run:
+                response = qa_bot.answer_question(question, vector_store)
+                run_id = getattr(run, "id", None)
+                response["langsmith_run_id"] = str(run_id) if run_id else None
+                return response
+    except Exception as e:
+        # If LangSmith fails, continue without tracing
+        print(f"LangSmith tracing failed: {e}")
+    
+    # Fallback: run without LangSmith
+    response = qa_bot.answer_question(question, vector_store)
+    response["langsmith_run_id"] = None
+    return response
 
 def send_langsmith_feedback(run_id, score, comment=""):
     """Send feedback to LangSmith for a given run_id"""
-    api_key = st.secrets["LANGCHAIN_API_KEY"]
-    url = f"https://api.smith.langchain.com/runs/{run_id}/feedback"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "score": score,
-        "comment": comment
-    }
-    response = requests.post(url, headers=headers, json=data)
-    return response.ok
+    try:
+        if not LANGSMITH_ENABLED:
+            return False
+        
+        api_key = st.secrets.get("LANGCHAIN_API_KEY")
+        if not api_key:
+            return False
+            
+        url = f"https://api.smith.langchain.com/runs/{run_id}/feedback"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "score": score,
+            "comment": comment
+        }
+        response = requests.post(url, headers=headers, json=data)
+        return response.ok
+    except Exception as e:
+        print(f"LangSmith feedback failed: {e}")
+        return False
 
 def main():
     # Header
