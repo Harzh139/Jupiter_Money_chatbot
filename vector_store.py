@@ -1,3 +1,12 @@
+# --- SQLITE3 COMPATIBILITY FIX FOR CHROMADB ---
+try:
+    import pysqlite3
+    import sys
+    sys.modules["sqlite3"] = pysqlite3
+except ImportError:
+    pass
+# ---------------------------------------------
+
 import json
 import os
 import chromadb

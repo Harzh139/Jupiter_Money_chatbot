@@ -8,3 +8,4 @@ groq
 chromadb
 python-dotenv
 lxml
+pysqlite3-binary
